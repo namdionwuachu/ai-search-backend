@@ -1,0 +1,11 @@
+If your index.py uses boto3, opensearch-py, and textract, your requirements.txt should contain:
+
+boto3
+opensearch-py
+aws-textract-helper
+If you also use requests or other dependencies, add them:
+
+boto3
+opensearch-py
+aws-textract-helper
+requests

@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "CloudFormation template for AI-powered search backend with document ingestion"
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: "S3 bucket name for storing Lambda function code"
+  OpenSearchDomainName:
+    Type: String
+    Default: "enterprise-rag-poc"
+    Description: "Name of the OpenSearch domain"
+  BedrockModelId:
+    Type: String
+    Default: "anthropic.claude-v3"
+    Description: "Amazon Bedrock model ID for AI response generation"
+  LambdaMemorySize:
+    Type: Number
+    Default: 128
+    Description: "Memory size (MB) for Lambda functions"
+  LambdaTimeout:
+    Type: Number
+    Default: 300
+    Description: "Execution timeout (seconds) for Lambda functions"
+  APIStageName:
+    Type: String
+    Default: "dev"
+    Description: "Stage name for API Gateway"
+
+Resources:
+
+  ### IAM Role for Lambda Functions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OpenSearchAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "es:ESHttpGet"
+                  - "es:ESHttpPut"
+                  - "es:ESHttpPost"
+                  - "es:ESHttpDelete"
+                Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*"
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "bedrock:InvokeModel"
+                Resource: "*"
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:PutObject"
+                  - "s3:DeleteObject"
+                Resource: 
+                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+        - PolicyName: TextractAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "textract:*"
+                Resource: "*"
+
+  ### Lambda Function - Document Ingestion
+  IngestionLambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      FunctionName: "Document-Ingestion-Lambda"
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Environment:
+        Variables:
+          OPENSEARCH_DOMAIN: !GetAtt OpenSearchCluster.DomainEndpoint
+          S3_BUCKET: !Ref S3BucketName
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: "document_ingestion_lambda.zip"
+
+  ### Lambda Function - AI Search
+  SearchLambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      FunctionName: "AI-Search-Lambda"
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Environment:
+        Variables:
+          OPENSEARCH_DOMAIN: !GetAtt OpenSearchCluster.DomainEndpoint
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          S3_BUCKET: !Ref S3BucketName
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: "ai_search_lambda.zip"
+
+  ### API Gateway
+  QueryAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: AI-Search-API
+      Description: "API for AI-powered document search"
+
+  QueryResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref QueryAPI
+      ParentId: !GetAtt QueryAPI.RootResourceId
+      PathPart: "query"
+
+  ### API Gateway CORS Preflight (OPTIONS)
+  QueryOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref QueryAPI
+      ResourceId: !Ref QueryResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          "application/json": "{ \"statusCode\": 200 }"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  ### API Gateway POST Method
+  QueryMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref QueryAPI
+      ResourceId: !Ref QueryResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SearchLambdaFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      ResponseModels:
+        "application/json": "Empty"
+
+  ### API Gateway Deployment
+  APIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: QueryMethod
+    Properties:
+      RestApiId: !Ref QueryAPI
+
+  APIStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref APIDeployment
+      RestApiId: !Ref QueryAPI
+      StageName: !Ref APIStageName
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          CachingEnabled: false
+      AccessLogSetting:
+        DestinationArn: !GetAtt APILogGroup.Arn
+        Format: "$context.requestId $context.identity.sourceIp $context.httpMethod $context.resourcePath $context.status $context.responseLength"
+
+  ### API Gateway Log Group
+  APILogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/${QueryAPI}"
+      RetentionInDays: 30
+
+Outputs:
+  QueryAPIEndpoint:
+    Description: "API Gateway endpoint for AI search"
+    Value: !Sub "https://${QueryAPI}.execute-api.${AWS::Region}.amazonaws.com/${APIStageName}/query"
+
+  OpenSearchDashboardsURL:
+    Description: "OpenSearch Dashboards URL"
+    Value: !Sub "https://${OpenSearchCluster.DomainEndpoint}/_dashboards/"
+

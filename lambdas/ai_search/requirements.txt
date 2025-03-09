@@ -1,0 +1,14 @@
+If your AI Search Lambda uses OpenSearch, Bedrock, and boto3, then use:
+
+boto3
+opensearch-py
+requests
+
+If you also use any ML-related libraries, include:
+
+boto3
+opensearch-py
+requests
+numpy
+pandas
+
