@@ -16,9 +16,15 @@ ai-search-backend/
 │── README.md  # Project documentation
 │── .gitignore  # Ignore unnecessary files
 
+🚀 Architecture Overview
+- **Document Ingestion Lambda**: Processes uploaded documents from S3, extracts text, and indexes them in OpenSearch.
+- **AI Search Lambda**: Retrieves relevant documents from OpenSearch and generates AI responses using Amazon Bedrock.
+- **CloudFormation Template**: Deploys necessary AWS resources including S3, OpenSearch, Lambda functions, IAM roles, and API Gateway.
+- **Lambda Layers**: Adds dependencies like `boto3`, `requests`, and `opensearch-py` to optimize function execution.
+
 🚀 Features
 AI-powered document search using OpenSearch and Amazon Bedrock.
-Document ingestion pipeline that processes PDFs, images, and text files.
+Document ingestion pipeline that processes PDFs, images, doc, and text files.
 Serverless architecture using AWS Lambda, S3, and API Gateway.
 Automated deployment via CloudFormation.
 
